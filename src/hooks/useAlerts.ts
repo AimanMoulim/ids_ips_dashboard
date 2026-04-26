@@ -39,21 +39,33 @@ function mapApiAttack(api: any): Attack {
     sourceIP: api.source_ip || '0.0.0.0',
     destinationPort: api.destination_port || 0,
     country: api.country || 'Unknown',
-    countryCode: 'UN', // Mocked as backend doesn't provide
+    countryCode: api.country_code || 'UN', 
     attackType: api.attack_type || 'Unknown',
     severity: api.severity || 'LOW',
     confidence: api.confidence || 0,
     status: api.status || 'ALLOWED',
     features: Object.entries(api.features || {}).map(([name, value]) => ({ name, value: value as number })),
     duration: api.latency_ms ? `${api.latency_ms}ms` : '0ms',
-    lat: (Math.random() * 80) - 40, // Random lat/lon for the map if unknown
-    lng: (Math.random() * 180) - 90,
+    lat: api.lat || (Math.random() * 80) - 40,
+    lng: api.lon || (Math.random() * 180) - 90,
     actionTaken: api.status === 'BLOCKED' ? 'Auto-blocked' : 'Monitoring',
   };
 }
 
+function generateTimeline(attacks: Attack[]): TimelinePoint[] {
+  // Group by minute for the last 30 entries
+  const groups: Record<string, number> = {};
+  attacks.forEach(a => {
+    const time = a.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    groups[time] = (groups[time] || 0) + 1;
+  });
+  return Object.entries(groups)
+    .map(([time, value]) => ({ time, value }))
+    .reverse()
+    .slice(-12);
+}
+
 export function useAlerts(): AlertState {
-  // Data states (Init empty, fully relying on API)
   const [allAttacks, setAllAttacks] = useState<Attack[]>([]);
   const [blockedIPs, setBlockedIPs] = useState<BlockedIP[]>([]);
   const [kpi, setKpi] = useState<KPIData>({ attacksPerHour: 0, ipsBlocked: 0, latencyMs: 0, falsePositiveRate: 0, f1Score: 0, attackDelta: 0 });
@@ -68,20 +80,23 @@ export function useAlerts(): AlertState {
 
   const recentAttacks = allAttacks.slice(0, 10);
 
-  // Handle adding new alert (WS pushes)
+  useEffect(() => {
+    setTimeline(generateTimeline(allAttacks));
+  }, [allAttacks]);
+
   const handleAddAlert = useCallback((newAttack: Attack) => {
-    setAllAttacks(prev => [newAttack, ...prev].slice(0, 1000));
+    setAllAttacks(prev => {
+      const updated = [newAttack, ...prev].slice(0, 1000);
+      return updated.sort((a,b) => b.timestamp.getTime() - a.timestamp.getTime());
+    });
     setLatestAlert(newAttack);
     setUnreadCount(prev => prev + 1);
-    setAlertHistory(prev => [newAttack, ...prev].slice(0, 50));
     
-    // Auto-dismiss
     setTimeout(() => {
       setLatestAlert(prev => (prev?.id === newAttack.id ? null : prev));
     }, 6000);
   }, []);
 
-  // ── REAL API SYNC ──
   useEffect(() => {
     let isMounted = true;
     let pollInterval: any;
@@ -95,11 +110,10 @@ export function useAlerts(): AlertState {
         ]);
 
         if (isMounted) {
-          // Parse alerts
           if (Array.isArray(recentRes.data)) {
-            setAllAttacks(recentRes.data.map(mapApiAttack));
+            const mapped = recentRes.data.map(mapApiAttack);
+            setAllAttacks(mapped.sort((a,b) => b.timestamp.getTime() - a.timestamp.getTime()));
           }
-          // Parse stats
           if (statsRes.data) {
             setKpi(prev => ({
               ...prev,
@@ -107,55 +121,59 @@ export function useAlerts(): AlertState {
               ipsBlocked: statsRes.data.total_blocked || 0,
               latencyMs: statsRes.data.latency_ms || 0,
               falsePositiveRate: statsRes.data.fpr || 0,
+              attackDelta: statsRes.data.attack_delta || 0,
             }));
           }
-          // Parse blockeds
           if (Array.isArray(blockedRes.data)) {
-            setBlockedIPs(blockedRes.data.map(ipData => ({
-              ip: typeof ipData === 'string' ? ipData : ipData.ip,
-              country: 'Unknown',
-              countryCode: 'UN',
-              isp: 'Unknown',
-              firstSeen: new Date(),
-              lastSeen: new Date(),
-              attackCount: 1,
-              reason: 'API Blocked',
-              blockedBy: 'Auto',
-              abuseScore: 80,
-              categories: [],
-              totalReports: 1,
-            })));
+            setBlockedIPs(blockedRes.data.map(ipData => {
+              const ip = typeof ipData === 'string' ? ipData : ipData.ip;
+              return {
+                ip,
+                country: ipData.country || 'Unknown',
+                countryCode: ipData.country_code || 'UN',
+                isp: ipData.isp || 'Service Provider',
+                firstSeen: ipData.first_seen ? new Date(ipData.first_seen) : new Date(),
+                lastSeen: ipData.last_seen ? new Date(ipData.last_seen) : new Date(),
+                attackCount: ipData.attack_count || 1,
+                reason: ipData.reason || 'Security Policy',
+                blockedBy: ipData.blocked_by || 'Auto',
+                abuseScore: ipData.abuse_score || 85,
+                categories: ipData.categories || ['Hacking'],
+                totalReports: ipData.total_reports || 1,
+              };
+            }));
           }
         }
       } catch (err) {
-        console.warn('Backend offline, check connection to Suricata Flask API.');
+        console.warn('Backend connection issue.');
       }
     };
 
     fetchInitialData();
     pollInterval = setInterval(fetchInitialData, POLL_INTERVAL);
 
-    // Setup WS
     const connectWS = () => {
-      try {
-        const ws = new WebSocket(WS_URL);
-        wsRef.current = ws;
-        
-        ws.onmessage = (event) => {
-          try {
-            const data = JSON.parse(event.data);
-            handleAddAlert(mapApiAttack(data));
-          } catch (e) {
-            console.error('WS parse error', e);
-          }
-        };
+      if (wsRef.current?.readyState === WebSocket.OPEN) return;
+      
+      const ws = new WebSocket(WS_URL);
+      wsRef.current = ws;
+      
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          handleAddAlert(mapApiAttack(data));
+        } catch (e) {
+          console.error('WS parse error', e);
+        }
+      };
 
-        ws.onclose = () => {
-          setTimeout(connectWS, 2000); // Always try to reconnect
-        };
-      } catch (e) {
-        console.warn('WS Connect failed', e);
-      }
+      ws.onclose = () => {
+        setTimeout(connectWS, 3000);
+      };
+      
+      ws.onerror = () => {
+        ws.close();
+      };
     };
 
     connectWS();
@@ -167,33 +185,25 @@ export function useAlerts(): AlertState {
     };
   }, [handleAddAlert]);
 
-  const dismissAlert = useCallback(() => {
-    setLatestAlert(null);
-  }, []);
+  const dismissAlert = useCallback(() => setLatestAlert(null), []);
 
   const blockIP = useCallback(async (ip: string) => {
     try {
       await axios.post(`${API_URL}/api/block`, { ip });
+      setAllAttacks(prev =>
+        prev.map(a => (a.sourceIP === ip ? { ...a, status: 'BLOCKED' as const } : a))
+      );
     } catch (e) { console.error('Block IP failed', e); }
-    
-    // Optimistic UI update
-    setAllAttacks(prev =>
-      prev.map(a => (a.sourceIP === ip ? { ...a, status: 'BLOCKED' as const } : a))
-    );
   }, []);
 
   const unblockIP = useCallback(async (ip: string) => {
     try {
       await axios.post(`${API_URL}/api/unblock`, { ip });
+      setBlockedIPs(prev => prev.filter(b => b.ip !== ip));
     } catch (e) { console.error('Unblock IP failed', e); }
-    
-    // Optimistic UI update
-    setBlockedIPs(prev => prev.filter(b => b.ip !== ip));
   }, []);
 
-  const clearUnread = useCallback(() => {
-    setUnreadCount(0);
-  }, []);
+  const clearUnread = useCallback(() => setUnreadCount(0), []);
 
   return {
     recentAttacks,
@@ -205,7 +215,7 @@ export function useAlerts(): AlertState {
     selectedAttack,
     unreadCount,
     alertHistory,
-    isDemoMode: false, // Hardcoded to false, entirely real
+    isDemoMode: false,
     setSelectedAttack,
     dismissAlert,
     blockIP,
