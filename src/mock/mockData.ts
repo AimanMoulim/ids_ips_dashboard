@@ -54,10 +54,8 @@ export interface KPIData {
 
 export interface TimelinePoint {
   time: string;
-  hour: number;
-  DDoS: number;
-  PortScan: number;
-  BruteForce: number;
+  value: number;
+  [key: string]: any; // Allow for dynamic attack types if needed
 }
 
 const FLAG_EMOJIS: Record<string, string> = {

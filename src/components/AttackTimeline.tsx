@@ -62,28 +62,13 @@ export default function AttackTimeline({ data }: AttackTimelineProps) {
               iconSize={8}
             />
             <Line
+              name="Incidents"
               type="monotone"
-              dataKey="DDoS"
+              dataKey="value"
               stroke="#EF4444"
               strokeWidth={3}
               dot={false}
               activeDot={{ r: 6, fill: '#EF4444', stroke: '#FFFFFF', strokeWidth: 2 }}
-            />
-            <Line
-              type="monotone"
-              dataKey="PortScan"
-              stroke="#F97316"
-              strokeWidth={3}
-              dot={false}
-              activeDot={{ r: 6, fill: '#F97316', stroke: '#FFFFFF', strokeWidth: 2 }}
-            />
-            <Line
-              type="monotone"
-              dataKey="BruteForce"
-              stroke="#F59E0B"
-              strokeWidth={3}
-              dot={false}
-              activeDot={{ r: 6, fill: '#F59E0B', stroke: '#FFFFFF', strokeWidth: 2 }}
             />
           </LineChart>
         </ResponsiveContainer>

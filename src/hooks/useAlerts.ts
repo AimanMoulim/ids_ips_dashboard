@@ -53,15 +53,17 @@ function mapApiAttack(api: any): Attack {
 }
 
 function generateTimeline(attacks: Attack[]): TimelinePoint[] {
-  // Group by minute for the last 30 entries
   const groups: Record<string, number> = {};
-  attacks.forEach(a => {
+  // Take last 50 for trend
+  const items = attacks.slice(0, 50);
+  items.forEach(a => {
     const time = a.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     groups[time] = (groups[time] || 0) + 1;
   });
+  
   return Object.entries(groups)
     .map(([time, value]) => ({ time, value }))
-    .reverse()
+    .sort((a, b) => a.time.localeCompare(b.time))
     .slice(-12);
 }
 
